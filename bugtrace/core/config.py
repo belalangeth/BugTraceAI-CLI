@@ -182,7 +182,12 @@ class Settings(SettingsLoadersMixin, SettingsOpsMixin, BaseSettings):
     # Supported by the backend: low, medium, high, xhigh, max (max is not
     # accepted by every model, e.g. gpt-5.4-mini rejects it). Empty string =
     # do not send the parameter and let the backend pick its default.
+    # CODEX_REASONING_EFFORT is the legacy global value; the per-slot values
+    # below take precedence and are chosen by the model slug (light slugs
+    # like -mini/-nano use _FAST, everything else uses _MAIN).
     CODEX_REASONING_EFFORT: str = ""
+    CODEX_REASONING_EFFORT_MAIN: str = ""
+    CODEX_REASONING_EFFORT_FAST: str = ""
 
     # --- False Positive Filtering (Phase 17: v2.3) ---
     FP_CONFIDENCE_THRESHOLD: float = 0.5  # Minimum fp_confidence to pass filtering (0.0-1.0)

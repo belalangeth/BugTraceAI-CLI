@@ -360,6 +360,10 @@ class SettingsLoadersMixin:
             self.CODEX_MODEL_AUTODISCOVERY = section.getboolean("MODEL_AUTODISCOVERY")
         if "REASONING_EFFORT" in section:
             self.CODEX_REASONING_EFFORT = section["REASONING_EFFORT"].strip().lower()
+        if "REASONING_EFFORT_MAIN" in section:
+            self.CODEX_REASONING_EFFORT_MAIN = section["REASONING_EFFORT_MAIN"].strip().lower()
+        if "REASONING_EFFORT_FAST" in section:
+            self.CODEX_REASONING_EFFORT_FAST = section["REASONING_EFFORT_FAST"].strip().lower()
     def _load_validation_config(self, config):
         """Load VALIDATION section config for Vision-Based XSS Validation."""
         if "VALIDATION" not in config:

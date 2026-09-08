@@ -308,7 +308,7 @@ def test_build_codex_payload_includes_reasoning_effort():
         reasoning_effort="high",
     )
     assert payload["reasoning"] == {"effort": "high"}
-    # Per-call override beats the global setting.
+    # Per-call override beats the settings-derived value.
     payload2 = host._build_codex_payload(
         "gpt-5.6-sol",
         [{"role": "user", "content": "Hi"}],
@@ -316,6 +316,34 @@ def test_build_codex_payload_includes_reasoning_effort():
         reasoning_effort="",
     )
     assert "reasoning" not in payload2
+
+
+def test_build_codex_payload_per_slot_reasoning_effort(monkeypatch):
+    import bugtrace.core.config as config_mod
+    from bugtrace.core.config import settings
+
+    host = _CodexMixinHost()
+    # Heavy slug -> _MAIN; light slug -> _FAST; legacy global is the fallback.
+    monkeypatch.setattr(settings, "CODEX_REASONING_EFFORT_MAIN", "high")
+    monkeypatch.setattr(settings, "CODEX_REASONING_EFFORT_FAST", "low")
+    monkeypatch.setattr(settings, "CODEX_REASONING_EFFORT", "medium")
+
+    heavy = host._build_codex_payload("gpt-6-astra", [{"role": "user", "content": "Hi"}], max_tokens=100)
+    assert heavy["reasoning"] == {"effort": "high"}
+
+    light = host._build_codex_payload("gpt-5.4-mini", [{"role": "user", "content": "Hi"}], max_tokens=100)
+    assert light["reasoning"] == {"effort": "low"}
+
+    # Empty per-slot falls back to the legacy global value.
+    monkeypatch.setattr(settings, "CODEX_REASONING_EFFORT_MAIN", "")
+    heavy2 = host._build_codex_payload("gpt-6-astra", [{"role": "user", "content": "Hi"}], max_tokens=100)
+    assert heavy2["reasoning"] == {"effort": "medium"}
+
+    # All empty -> no reasoning parameter sent.
+    monkeypatch.setattr(settings, "CODEX_REASONING_EFFORT_FAST", "")
+    monkeypatch.setattr(settings, "CODEX_REASONING_EFFORT", "")
+    light2 = host._build_codex_payload("gpt-5.4-mini", [{"role": "user", "content": "Hi"}], max_tokens=100)
+    assert "reasoning" not in light2
 
 
 def test_build_codex_payload_omits_instructions_when_no_system():

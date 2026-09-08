@@ -156,7 +156,22 @@ class LLMCodexMixin:
             try:
                 from bugtrace.core.config import settings
 
-                reasoning_effort = getattr(settings, "CODEX_REASONING_EFFORT", "") or ""
+                # Per-slot effort wins over the legacy global value. The slot is
+                # inferred from the model slug (light slugs -> fast tier).
+                from bugtrace.core.codex_models import is_light_slug
+
+                if is_light_slug(model):
+                    reasoning_effort = (
+                        getattr(settings, "CODEX_REASONING_EFFORT_FAST", "")
+                        or getattr(settings, "CODEX_REASONING_EFFORT", "")
+                        or ""
+                    )
+                else:
+                    reasoning_effort = (
+                        getattr(settings, "CODEX_REASONING_EFFORT_MAIN", "")
+                        or getattr(settings, "CODEX_REASONING_EFFORT", "")
+                        or ""
+                    )
             except Exception:
                 reasoning_effort = ""
         effort = (reasoning_effort or "").strip().lower()

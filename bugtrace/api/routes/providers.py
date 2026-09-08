@@ -74,12 +74,15 @@ class CodexModelsRequest(BaseModel):
 
     Omitted fields fall back to auto-discovery defaults (the newest served
     model per tier). Both values must be slugs the backend currently serves.
-    reasoning_effort (low/medium/high/xhigh/max) is sent to the ChatGPT
-    backend on every codex call; empty string clears it (backend default).
+    reasoning_effort / reasoning_effort_main / reasoning_effort_fast
+    (low/medium/high/xhigh/max) are sent to the ChatGPT backend on every
+    codex call; empty string clears that slot (backend default).
     """
     main_model: Optional[str] = None
     light_model: Optional[str] = None
-    reasoning_effort: Optional[str] = None
+    reasoning_effort: Optional[str] = None  # legacy global — applied to both slots
+    reasoning_effort_main: Optional[str] = None
+    reasoning_effort_fast: Optional[str] = None
 
 
 # Valid reasoning effort values the ChatGPT backend accepts (probed live).
@@ -435,6 +438,8 @@ async def get_codex_models():
         "models": slugs,
         "assignments": assignments,
         "reasoning_effort": (getattr(settings, "CODEX_REASONING_EFFORT", "") or ""),
+        "reasoning_effort_main": (getattr(settings, "CODEX_REASONING_EFFORT_MAIN", "") or ""),
+        "reasoning_effort_fast": (getattr(settings, "CODEX_REASONING_EFFORT_FAST", "") or ""),
     }
 
 
@@ -463,18 +468,26 @@ async def refresh_codex_models(req: Optional[CodexModelsRequest] = None):
             return {"success": False, "configured": True, "message": f"'{pick}' is not in the discovered model list.", "models": slugs, "assignments": {}}
 
     # Persist reasoning effort (runtime + .env) when provided.
-    if req.reasoning_effort is not None:
-        effort = req.reasoning_effort.strip().lower()
+    # legacy reasoning_effort applies to both slots (keeps the old WEB/API
+    # clients working); per-slot fields override their side only.
+    for field, env_key, attr in (
+        (req.reasoning_effort, "CODEX_REASONING_EFFORT", "CODEX_REASONING_EFFORT"),
+        (req.reasoning_effort_main, "CODEX_REASONING_EFFORT_MAIN", "CODEX_REASONING_EFFORT_MAIN"),
+        (req.reasoning_effort_fast, "CODEX_REASONING_EFFORT_FAST", "CODEX_REASONING_EFFORT_FAST"),
+    ):
+        if field is None:
+            continue
+        effort = field.strip().lower()
         if effort and effort not in _VALID_REASONING_EFFORTS:
             return {
                 "success": False,
                 "configured": True,
-                "message": f"Invalid reasoning effort '{req.reasoning_effort}'. Valid: {sorted(_VALID_REASONING_EFFORTS)}.",
+                "message": f"Invalid reasoning effort '{field}'. Valid: {sorted(_VALID_REASONING_EFFORTS)}.",
                 "models": slugs,
                 "assignments": {},
             }
-        update_env_var("CODEX_REASONING_EFFORT", effort)
-        object.__setattr__(settings, "CODEX_REASONING_EFFORT", effort)
+        update_env_var(env_key, effort)
+        object.__setattr__(settings, attr, effort)
 
     assignments = plan_codex_assignments(
         slugs,
@@ -492,5 +505,7 @@ async def refresh_codex_models(req: Optional[CodexModelsRequest] = None):
         "models": slugs,
         "assignments": assignments,
         "reasoning_effort": (getattr(settings, "CODEX_REASONING_EFFORT", "") or ""),
+        "reasoning_effort_main": (getattr(settings, "CODEX_REASONING_EFFORT_MAIN", "") or ""),
+        "reasoning_effort_fast": (getattr(settings, "CODEX_REASONING_EFFORT_FAST", "") or ""),
         "message": "Codex models refreshed and applied to the current session.",
     }
