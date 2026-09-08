@@ -74,9 +74,18 @@ class CodexModelsRequest(BaseModel):
 
     Omitted fields fall back to auto-discovery defaults (the newest served
     model per tier). Both values must be slugs the backend currently serves.
+    reasoning_effort (low/medium/high/xhigh/max) is sent to the ChatGPT
+    backend on every codex call; empty string clears it (backend default).
     """
     main_model: Optional[str] = None
     light_model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+
+
+# Valid reasoning effort values the ChatGPT backend accepts (probed live).
+# `max` is rejected by some models (e.g. gpt-5.4-mini) but accepted by the
+# heavy ones; keep it selectable and let the backend enforce per-model.
+_VALID_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 
 # ──── Helpers ────
@@ -420,7 +429,13 @@ async def get_codex_models():
         preferred_heavy=getattr(settings, "DEFAULT_MODEL", "") or "",
         preferred_light=getattr(settings, "REPORTING_MODEL", "") or "",
     )
-    return {"success": True, "configured": True, "models": slugs, "assignments": assignments}
+    return {
+        "success": True,
+        "configured": True,
+        "models": slugs,
+        "assignments": assignments,
+        "reasoning_effort": (getattr(settings, "CODEX_REASONING_EFFORT", "") or ""),
+    }
 
 
 @router.post("/provider/codex/models")
@@ -447,6 +462,20 @@ async def refresh_codex_models(req: Optional[CodexModelsRequest] = None):
         if pick and pick not in slugs:
             return {"success": False, "configured": True, "message": f"'{pick}' is not in the discovered model list.", "models": slugs, "assignments": {}}
 
+    # Persist reasoning effort (runtime + .env) when provided.
+    if req.reasoning_effort is not None:
+        effort = req.reasoning_effort.strip().lower()
+        if effort and effort not in _VALID_REASONING_EFFORTS:
+            return {
+                "success": False,
+                "configured": True,
+                "message": f"Invalid reasoning effort '{req.reasoning_effort}'. Valid: {sorted(_VALID_REASONING_EFFORTS)}.",
+                "models": slugs,
+                "assignments": {},
+            }
+        update_env_var("CODEX_REASONING_EFFORT", effort)
+        object.__setattr__(settings, "CODEX_REASONING_EFFORT", effort)
+
     assignments = plan_codex_assignments(
         slugs,
         preferred_heavy=req.main_model or "",
@@ -462,5 +491,6 @@ async def refresh_codex_models(req: Optional[CodexModelsRequest] = None):
         "configured": True,
         "models": slugs,
         "assignments": assignments,
+        "reasoning_effort": (getattr(settings, "CODEX_REASONING_EFFORT", "") or ""),
         "message": "Codex models refreshed and applied to the current session.",
     }

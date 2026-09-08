@@ -178,6 +178,12 @@ class Settings(SettingsLoadersMixin, SettingsOpsMixin, BaseSettings):
     # preset remains the fallback whenever the backend is unreachable.
     CODEX_MODEL_AUTODISCOVERY: bool = True
 
+    # Reasoning effort sent to the ChatGPT backend for every codex call.
+    # Supported by the backend: low, medium, high, xhigh, max (max is not
+    # accepted by every model, e.g. gpt-5.4-mini rejects it). Empty string =
+    # do not send the parameter and let the backend pick its default.
+    CODEX_REASONING_EFFORT: str = ""
+
     # --- False Positive Filtering (Phase 17: v2.3) ---
     FP_CONFIDENCE_THRESHOLD: float = 0.5  # Minimum fp_confidence to pass filtering (0.0-1.0)
     FP_SKEPTICAL_WEIGHT: float = 0.4  # Weight of skeptical_score in fp_confidence calc

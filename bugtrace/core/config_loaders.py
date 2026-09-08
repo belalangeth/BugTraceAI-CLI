@@ -358,6 +358,8 @@ class SettingsLoadersMixin:
             self.CODEX_TOKEN_FILE = section["TOKEN_FILE"].strip()
         if "MODEL_AUTODISCOVERY" in section:
             self.CODEX_MODEL_AUTODISCOVERY = section.getboolean("MODEL_AUTODISCOVERY")
+        if "REASONING_EFFORT" in section:
+            self.CODEX_REASONING_EFFORT = section["REASONING_EFFORT"].strip().lower()
     def _load_validation_config(self, config):
         """Load VALIDATION section config for Vision-Based XSS Validation."""
         if "VALIDATION" not in config:

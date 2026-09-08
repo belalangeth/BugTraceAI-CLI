@@ -295,6 +295,27 @@ def test_build_codex_payload_converts_messages():
     # ChatGPT backend applies its own default — no explicit temperature.
     assert "temperature" not in payload
     assert "messages" not in payload
+    # No reasoning effort configured by default — backend picks its own.
+    assert "reasoning" not in payload
+
+
+def test_build_codex_payload_includes_reasoning_effort():
+    host = _CodexMixinHost()
+    payload = host._build_codex_payload(
+        "gpt-5.6-sol",
+        [{"role": "user", "content": "Hi"}],
+        max_tokens=100,
+        reasoning_effort="high",
+    )
+    assert payload["reasoning"] == {"effort": "high"}
+    # Per-call override beats the global setting.
+    payload2 = host._build_codex_payload(
+        "gpt-5.6-sol",
+        [{"role": "user", "content": "Hi"}],
+        max_tokens=100,
+        reasoning_effort="",
+    )
+    assert "reasoning" not in payload2
 
 
 def test_build_codex_payload_omits_instructions_when_no_system():

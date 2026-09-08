@@ -114,6 +114,7 @@ class LLMCodexMixin:
         messages: List[Dict[str, Any]],
         max_tokens: int,
         temperature: float = 0.7,
+        reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build a Responses API payload for the ChatGPT backend.
 
@@ -127,6 +128,9 @@ class LLMCodexMixin:
           ("Unsupported parameter") — the backend applies its own default
         - `temperature` is omitted because the backend applies its own default
           for reasoning models and rejects explicit temperatures on some of them
+        - `reasoning: {"effort": ...}` is honored when configured (CODEX_REASONING_EFFORT
+          or an explicit per-call override); low/medium/high/xhigh are accepted by every
+          codex model, `max` is rejected by some (e.g. gpt-5.4-mini)
         """
         instructions = None
         input_messages = []
@@ -147,6 +151,17 @@ class LLMCodexMixin:
         }
         if instructions:
             payload["instructions"] = instructions
+
+        if not reasoning_effort:
+            try:
+                from bugtrace.core.config import settings
+
+                reasoning_effort = getattr(settings, "CODEX_REASONING_EFFORT", "") or ""
+            except Exception:
+                reasoning_effort = ""
+        effort = (reasoning_effort or "").strip().lower()
+        if effort:
+            payload["reasoning"] = {"effort": effort}
         return payload
 
     async def _consume_codex_sse(self, resp, module_name: str = "") -> Tuple[str, Dict[str, int]]:
