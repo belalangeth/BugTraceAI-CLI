@@ -63,6 +63,16 @@ async def lifespan(app: FastAPI):
     if recovered_refreshes:
         logger.info(f"Resumed {recovered_refreshes} pending Repeater report refresh(es)")
 
+    # Codex provider: refresh the model slots from the ChatGPT backend so a
+    # restarted API never points at a renamed/removed model. Guarded inside
+    # _maybe_refresh_codex_models (provider + flag checks, never raises).
+    if settings.PROVIDER == "codex" and getattr(settings, "CODEX_AUTH_ENABLED", False):
+        try:
+            from bugtrace.core.llm_client import llm_client
+            await llm_client._maybe_refresh_codex_models()
+        except Exception as e:
+            logger.warning(f"Codex model auto-discovery at startup failed: {e}")
+
     # Check for updates (non-blocking, silent on failure)
     global _update_info
     try:
