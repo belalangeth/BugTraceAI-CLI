@@ -347,6 +347,17 @@ class SettingsLoadersMixin:
             self.ANTHROPIC_OAUTH_ENABLED = section.getboolean("ENABLED")
         if "TOKEN_FILE" in section:
             self.ANTHROPIC_TOKEN_FILE = section["TOKEN_FILE"].strip()
+    def _load_codex_config(self, config):
+        """Load CODEX section config for the Codex (ChatGPT login) provider."""
+        if "CODEX" not in config:
+            return
+        section = config["CODEX"]
+        if "ENABLED" in section:
+            self.CODEX_AUTH_ENABLED = section.getboolean("ENABLED")
+        if "TOKEN_FILE" in section:
+            self.CODEX_TOKEN_FILE = section["TOKEN_FILE"].strip()
+        if "MODEL_AUTODISCOVERY" in section:
+            self.CODEX_MODEL_AUTODISCOVERY = section.getboolean("MODEL_AUTODISCOVERY")
     def _load_validation_config(self, config):
         """Load VALIDATION section config for Vision-Based XSS Validation."""
         if "VALIDATION" not in config:
@@ -564,6 +575,7 @@ class SettingsLoadersMixin:
         self._load_authority_config(config)
         self._load_lonewolf_config(config)
         self._load_anthropic_config(config)
+        self._load_codex_config(config)
         self._load_validation_config(config)
         self._load_qlearning_config(config)
         self._load_manipulator_config(config)

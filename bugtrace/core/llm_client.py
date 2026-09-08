@@ -19,6 +19,7 @@ from bugtrace.core.llm_shell import (
     LLMConnectivityMixin,
     LLMProviderMixin,
     LLMAnthropicMixin,
+    LLMCodexMixin,
     LLMGenerateMixin,
     LLMThreadMixin,
     LLMVisionMixin,
@@ -47,6 +48,7 @@ class LLMClient(
     LLMCacheMixin,
     LLMProviderMixin,
     LLMAnthropicMixin,
+    LLMCodexMixin,
     LLMCircuitMixin,
     LLMConnectivityMixin,
     LLMMiscMixin,
@@ -79,6 +81,11 @@ class LLMClient(
         # Anthropic OAuth token cache (lazy-loaded on first anthropic/ model call)
         self._anthropic_token_cache: Optional[str] = None
         self._anthropic_token_expires: float = 0
+
+        # Codex (ChatGPT login) token cache (lazy-loaded on first codex call)
+        self._codex_token_cache: Optional[str] = None
+        self._codex_token_expires: float = 0
+        self._codex_account_id: Optional[str] = None
 
         self._apply_provider_config(getattr(settings, '_provider_config', {}), api_key)
 

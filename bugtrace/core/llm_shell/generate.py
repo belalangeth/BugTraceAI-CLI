@@ -120,14 +120,40 @@ class LLMGenerateMixin:
         system_prompt: Optional[str],
         temperature: float,
         max_tokens: int,
-        is_anthropic: bool = False
+        is_anthropic: bool = False,
+        is_responses: bool = False
     ) -> Optional[str]:
         """Process API response and handle errors/refusals."""
         if resp.status == 200:
             data = await resp.json()
 
             # Parse response based on provider
-            if is_anthropic:
+            if is_responses:
+                # ChatGPT backend Responses API: output[*] message items whose
+                # content blocks are typed "output_text". Skip reasoning items.
+                output = data.get("output", []) or []
+                text_parts = []
+                for item in output:
+                    if not isinstance(item, dict) or item.get("type") != "message":
+                        continue
+                    for block in item.get("content", []) or []:
+                        if isinstance(block, dict) and block.get("type") == "output_text":
+                            text_parts.append(block.get("text", ""))
+                text = "\n".join(p for p in text_parts if p)
+                if not text:
+                    self._record_model_call(current_model, success=False, latency_ms=latency_ms)
+                    logger.warning(f"Codex API: {current_model} returned no text content.")
+                    return None
+                # Map Responses API usage fields for telemetry
+                if "usage" in data:
+                    usage = data["usage"]
+                    input_tokens = usage.get("input_tokens", 0)
+                    output_tokens = usage.get("output_tokens", 0)
+                    usage["prompt_tokens"] = input_tokens
+                    usage["completion_tokens"] = output_tokens
+                    usage["total_tokens"] = usage.get("total_tokens") or (input_tokens + output_tokens)
+                logger.info(f"Codex API: Using {current_model} for {module_name}")
+            elif is_anthropic:
                 # Anthropic Messages API: content[0].text
                 content = data.get("content", [])
                 if not content:
@@ -221,7 +247,7 @@ class LLMGenerateMixin:
         """
         # No global semaphore - each agent runs independently
         # Rate limiting handled by retry with exponential backoff (tenacity)
-        if not self.api_key and not settings.ANTHROPIC_OAUTH_ENABLED:
+        if not self.api_key and not settings.ANTHROPIC_OAUTH_ENABLED and not settings.CODEX_AUTH_ENABLED:
             logger.warning(f"LLM Client: No API Key found for {module_name}. Skipping generation.")
             await self._audit_log(module_name, "NONE", prompt, "SKIPPED: Missing API Key")
             return None
@@ -331,21 +357,39 @@ class LLMGenerateMixin:
         except Exception as e:
             logger.warning(f"[ReportingFailover] Could not load provider '{pid}': {e}")
             return None
+        api_format = preset.get("api_format", "openai")
+        # The codex (ChatGPT login) provider authenticates via ~/.codex/auth.json
+        # and has no api_key_env — only key-based providers need a key here.
         key = os.environ.get(preset.get("api_key_env", ""), "") if preset.get("api_key_env") else ""
-        if not key:
+        if not key and api_format != "responses":
             logger.warning(f"[ReportingFailover] Provider '{pid}' has no API key — skipping")
             return None
         models_cfg = preset.get("models", {}) or {}
         model = models_cfg.get("REPORTING_MODEL") or models_cfg.get("DEFAULT_MODEL") or ""
         base_url = preset.get("base_url", "")
-        api_format = preset.get("api_format", "openai")
         if not model or not base_url:
             logger.warning(f"[ReportingFailover] Provider '{pid}' preset missing model/base_url")
             return None
         messages = self._build_messages(prompt, system_prompt)
         timeout = aiohttp.ClientTimeout(total=LLM_TOTAL_TIMEOUT, connect=LLM_CONNECT_TIMEOUT)
         try:
-            if api_format == "anthropic":
+            if api_format == "responses":
+                # Codex (ChatGPT login) — token comes from ~/.codex/auth.json,
+                # not from an api_key_env.
+                from bugtrace.core.codex_auth import get_valid_codex_token
+                codex_pair = await get_valid_codex_token()
+                if not codex_pair:
+                    logger.warning(f"[ReportingFailover] Codex token unavailable — skipping")
+                    return None
+                token, account_id = codex_pair
+                api_headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                }
+                if account_id:
+                    api_headers["ChatGPT-Account-ID"] = account_id
+                api_payload = self._build_codex_payload(model, messages, max_tokens, temperature)
+            elif api_format == "anthropic":
                 api_headers = self._build_anthropic_apikey_headers(key)
                 api_payload = self._build_anthropic_payload(model, messages, temperature, max_tokens, oauth=False)
             else:
@@ -357,7 +401,16 @@ class LLMGenerateMixin:
                         logger.warning(f"[ReportingFailover] '{pid}' {model} HTTP {resp.status} for {module_name}")
                         return None
                     data = await resp.json()
-                    if api_format == "anthropic":
+                    if api_format == "responses":
+                        text_parts = []
+                        for item in data.get("output", []) or []:
+                            if not isinstance(item, dict) or item.get("type") != "message":
+                                continue
+                            for block in item.get("content", []) or []:
+                                if isinstance(block, dict) and block.get("type") == "output_text":
+                                    text_parts.append(block.get("text", ""))
+                        text = "\n".join(p for p in text_parts if p)
+                    elif api_format == "anthropic":
                         parts = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
                         text = "\n".join(p for p in parts if p)
                     else:
@@ -467,12 +520,24 @@ class LLMGenerateMixin:
         (or the failover provider in `provider_ctx`, when set).
         """
         # Routing precedence:
-        #  1. api_format=='anthropic' provider  → Anthropic Messages API via x-api-key
-        #  2. OAuth path (anthropic/ model + ANTHROPIC_OAUTH_ENABLED) → Bearer token
-        #  3. everything else → OpenAI-format (OpenRouter/Z.ai)
+        #  1. api_format=='responses' provider (codex / ChatGPT login) → Responses API
+        #  2. api_format=='anthropic' provider  → Anthropic Messages API via x-api-key
+        #  3. OAuth path (anthropic/ model + ANTHROPIC_OAUTH_ENABLED) → Bearer token
+        #  4. everything else → OpenAI-format (OpenRouter/Z.ai)
+        is_codex = (self.api_format == 'responses')
         is_anthropic_apikey = (self.api_format == 'anthropic')
         is_anthropic = is_anthropic_apikey or self._is_anthropic_model(current_model)
-        if is_anthropic_apikey:
+        if is_codex:
+            token = await self._ensure_codex_token()
+            if not token:
+                logger.warning(f"Codex (ChatGPT login) token unavailable, skipping {current_model}")
+                return None  # Triggers model shifting to next model
+            api_url = (provider_ctx or {}).get('base_url') or self.base_url
+            api_headers = self._build_codex_headers(module_name)
+            api_payload = self._build_codex_payload(current_model, messages, max_tokens, temperature)
+            # Per-provider request-rate gate
+            await self._rate_limit_acquire((provider_ctx or {}).get('provider_id'))
+        elif is_anthropic_apikey:
             if not self.api_key:
                 logger.warning(f"Anthropic API key unavailable, skipping {current_model}")
                 return None
@@ -520,7 +585,8 @@ class LLMGenerateMixin:
                             resp, current_model, module_name, prompt,
                             latency_ms, model_override, system_prompt,
                             temperature, max_tokens,
-                            is_anthropic=is_anthropic
+                            is_anthropic=is_anthropic,
+                            is_responses=is_codex
                         )
         except asyncio.TimeoutError as e:
             # Transient: LLM request timed out - worth retrying

@@ -59,12 +59,27 @@ class LLMThreadMixin:
         module_name: str,
         thread: "ConversationThread",
         prompt: str,
-        is_anthropic: bool = False
+        is_anthropic: bool = False,
+        is_responses: bool = False
     ) -> Optional[str]:
         """Process API response for threaded generation."""
         if resp.status == 200:
             data = await resp.json()
-            if is_anthropic:
+            if is_responses:
+                # ChatGPT backend Responses API: output[*] message items
+                output = data.get("output", []) or []
+                text_parts = []
+                for item in output:
+                    if not isinstance(item, dict) or item.get("type") != "message":
+                        continue
+                    for block in item.get("content", []) or []:
+                        if isinstance(block, dict) and block.get("type") == "output_text":
+                            text_parts.append(block.get("text", ""))
+                response_text = "\n".join(p for p in text_parts if p)
+                if not response_text:
+                    logger.warning(f"LLM Thread: Model {current_model} returned empty response.")
+                    return None
+            elif is_anthropic:
                 content = data.get("content", [])
                 text_parts = [b["text"] for b in content if b.get("type") == "text"]
                 response_text = "\n".join(text_parts) if text_parts else ""
@@ -138,7 +153,15 @@ class LLMThreadMixin:
     ) -> Optional[str]:
         """Attempt threaded generation with a single model."""
         is_anthropic = (self.api_format == 'anthropic')
-        if is_anthropic:
+        is_responses = (self.api_format == 'responses')
+        if is_responses:
+            token = await self._ensure_codex_token()
+            if not token:
+                logger.warning(f"Codex (ChatGPT login) token unavailable, skipping {current_model}")
+                return None
+            api_headers = self._build_codex_headers(module_name)
+            payload = self._build_codex_payload(current_model, messages, max_tokens, temperature)
+        elif is_anthropic:
             api_headers = self._build_anthropic_apikey_headers(self.api_key or "")
             payload = self._build_anthropic_payload(
                 current_model, messages, temperature, max_tokens, oauth=False
@@ -158,7 +181,8 @@ class LLMThreadMixin:
                 async with session.post(self.base_url, headers=api_headers, json=payload) as resp:
                     return await self._handle_thread_response(
                         resp, current_model, module_name, thread, prompt,
-                        is_anthropic=is_anthropic
+                        is_anthropic=is_anthropic,
+                        is_responses=is_responses
                     )
         except Exception as e:
             logger.error(f"LLM Thread Exception with {current_model}: {str(e)}", exc_info=True)
@@ -177,7 +201,7 @@ class LLMThreadMixin:
         from bugtrace.core.conversation_thread import ConversationThread
 
         # No global semaphore - each agent runs independently
-        if not self.api_key:
+        if not self.api_key and not settings.CODEX_AUTH_ENABLED and not settings.ANTHROPIC_OAUTH_ENABLED:
             logger.warning(f"LLM Client: No API Key for {module_name}")
             return None
 

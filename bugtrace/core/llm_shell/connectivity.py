@@ -56,10 +56,15 @@ class LLMConnectivityMixin:
         Returns True if at least one model is responsive.
         Removes unresponsive models from self.models.
         """
-        if not self.api_key:
+        if not self.api_key and not settings.ANTHROPIC_OAUTH_ENABLED and not settings.CODEX_AUTH_ENABLED:
             return False
 
         dashboard.log("Verifying AI Model Connectivity...", "INFO")
+
+        # For the codex provider, refresh the model list from the ChatGPT
+        # backend first so stale preset slugs don't fail the health check.
+        if self.api_format == 'responses':
+            await self._maybe_refresh_codex_models()
 
         # We'll test up to 3 models to avoid long startup times
         test_pool = self.models[:3]
@@ -75,7 +80,17 @@ class LLMConnectivityMixin:
         """Ping a single model to check connectivity."""
         dashboard.log(f"Pinging model: {model}...", "INFO")
 
-        if self.api_format == 'anthropic':
+        if self.api_format == 'responses':
+            token = await self._ensure_codex_token()
+            if not token:
+                dashboard.log(f"Model {model} unreachable: no valid Codex login. Run `codex auth login`.", "ERROR")
+                return False
+            headers = self._build_codex_headers("ping")
+            payload = self._build_codex_payload(
+                model, [{"role": "user", "content": "Ping"}],
+                max_tokens=5, temperature=0.0
+            )
+        elif self.api_format == 'anthropic':
             headers = self._build_anthropic_apikey_headers(self.api_key or "")
             payload = self._build_anthropic_payload(
                 model, [{"role": "user", "content": "Ping"}],

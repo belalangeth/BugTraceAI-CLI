@@ -69,6 +69,16 @@ class ModelOverrideRequest(BaseModel):
     REPORTING_MODEL: Optional[str] = None
 
 
+class CodexModelsRequest(BaseModel):
+    """Manual model picks for the codex (ChatGPT login) provider.
+
+    Omitted fields fall back to auto-discovery defaults (the newest served
+    model per tier). Both values must be slugs the backend currently serves.
+    """
+    main_model: Optional[str] = None
+    light_model: Optional[str] = None
+
+
 # ──── Helpers ────
 
 
@@ -91,6 +101,11 @@ def _mask_api_key(key: Optional[str]) -> str:
 
 def _check_api_key(preset: Dict[str, Any]) -> tuple:
     """Check if provider's API key is configured. Returns (configured, masked_hint)."""
+    # The codex provider has no API key — it authenticates via the Codex CLI
+    # login (~/.codex/auth.json). Report configured when that login exists.
+    if preset.get("api_format") == "responses" or preset.get("id") == "codex":
+        from bugtrace.core.codex_auth import codex_auth_available
+        return codex_auth_available(), ""
     key_env = preset.get("api_key_env", "")
     key_value = os.environ.get(key_env) or getattr(settings, key_env, None)
     return bool(key_value), _mask_api_key(key_value)
@@ -209,16 +224,26 @@ async def switch_provider(req: SwitchProviderRequest):
         from bugtrace.core.llm_client import llm_client
         llm_client.reconfigure_from_active_preset()
         logger.info(f"LLM client reinitialized for provider: {req.provider}")
+        # Codex model names drift as the ChatGPT backend evolves — refresh the
+        # slots from /models right after switching so the scan starts on models
+        # the backend actually serves.
+        if preset.get("api_format") == "responses" or req.provider == "codex":
+            try:
+                await llm_client._maybe_refresh_codex_models()
+            except Exception as e:
+                logger.warning(f"Codex model auto-discovery after switch failed: {e}")
     except ImportError:
         logger.warning("Could not reimport llm_client for hot-reload")
 
     configured, hint = _check_api_key(preset)
+    # Models may have been remapped by auto-discovery — report live values.
+    models_map = preset.get("models", {}).keys()
     return {
         "message": f"Switched to provider: {preset['name']}",
         "provider": req.provider,
         "api_key_configured": configured,
         "api_key_hint": hint,
-        "models": {k: getattr(settings, k, "") for k in preset.get("models", {}).keys()},
+        "models": {k: getattr(settings, k, "") for k in models_map},
     }
 
 
@@ -233,11 +258,13 @@ async def test_provider_key(req: TestProviderRequest):
         raise HTTPException(status_code=400, detail="Provider has no base_url configured")
 
     # Use provided key, or fall back to configured key
+    api_format = preset.get("api_format", "openai")
+    is_codex = (api_format == "responses")
     api_key = req.api_key
-    if not api_key:
+    if not api_key and not is_codex:
         key_env = preset.get("api_key_env", "")
         api_key = os.environ.get(key_env) or getattr(settings, key_env, None)
-    if not api_key:
+    if not api_key and not is_codex:
         return {"success": False, "message": "No API key provided and none configured."}
 
     # Pick the fastest/cheapest model from preset for testing
@@ -247,10 +274,28 @@ async def test_provider_key(req: TestProviderRequest):
         return {"success": False, "message": "No model configured for this provider."}
 
     # Build headers + body in the provider's wire format. Anthropic uses the
-    # Messages API (x-api-key, model without the anthropic/ prefix); everyone else
-    # uses the OpenAI-compatible /chat/completions shape (Authorization: Bearer).
-    api_format = preset.get("api_format", "openai")
-    if api_format == "anthropic":
+    # Messages API (x-api-key, model without the anthropic/ prefix); codex uses
+    # the ChatGPT backend Responses API with the Codex CLI OAuth token; everyone
+    # else uses the OpenAI-compatible /chat/completions shape (Authorization: Bearer).
+    if api_format == "responses":
+        from bugtrace.core.codex_auth import get_valid_codex_token
+        codex_pair = await get_valid_codex_token()
+        if not codex_pair:
+            return {"success": False, "message": "No valid Codex login found. Run `codex auth login` (Sign in with ChatGPT) first."}
+        token, account_id = codex_pair
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        if account_id:
+            headers["ChatGPT-Account-ID"] = account_id
+        body = {
+            "model": test_model,
+            "input": [{"role": "user", "content": "Are you alive? Answer only yes."}],
+            "store": False,
+            "max_output_tokens": 5,
+        }
+    elif api_format == "anthropic":
         headers: Dict[str, str] = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
@@ -327,3 +372,88 @@ async def override_models(req: ModelOverrideRequest):
             pass
 
     return {"updated": updated, "message": f"Updated {len(updated)} model assignment(s)"}
+
+
+# ──── Codex (ChatGPT login) model discovery ────
+
+
+def _sync_codex_client_models(assignments: Dict[str, str]) -> None:
+    """Point the live LLM client's model-shifting pool at the new PRIMARY_MODELS."""
+    try:
+        from bugtrace.core.llm_client import llm_client
+        pool = [m.strip() for m in (assignments.get("PRIMARY_MODELS") or "").split(",") if m.strip()]
+        if pool:
+            llm_client.models = pool
+    except Exception:
+        logger.debug("Codex model sync skipped (llm_client unavailable)")
+
+
+def _codex_assignment_message() -> str:
+    """Shared hint for when the Codex CLI login is missing."""
+    return "No Codex login found. Run `codex auth login` (Sign in with ChatGPT) on the CLI host, then reload."
+
+
+@router.get("/provider/codex/models")
+async def get_codex_models():
+    """Return the models the ChatGPT backend serves for the Codex login.
+
+    Read-only: never writes. ``assignments`` is a preview of what
+    auto-discovery would apply (respecting currently pinned slugs).
+    """
+    from bugtrace.core.codex_auth import codex_auth_available, fetch_codex_models
+    from bugtrace.core.codex_models import plan_codex_assignments
+
+    if not codex_auth_available():
+        return {"success": False, "configured": False, "message": _codex_assignment_message(), "models": [], "assignments": {}}
+    slugs = await fetch_codex_models()
+    if not slugs:
+        return {"success": False, "configured": True, "message": "Could not reach the ChatGPT model list — keeping the preset models.", "models": [], "assignments": {}}
+    assignments = plan_codex_assignments(
+        slugs,
+        preferred_heavy=getattr(settings, "DEFAULT_MODEL", "") or "",
+        preferred_light=getattr(settings, "REPORTING_MODEL", "") or "",
+    )
+    return {"success": True, "configured": True, "models": slugs, "assignments": assignments}
+
+
+@router.post("/provider/codex/models")
+async def refresh_codex_models(req: Optional[CodexModelsRequest] = None):
+    """Fetch the served model list and (re)apply slot assignments.
+
+    Empty body = refresh with auto-discovery defaults. A body with
+    main_model/light_model pins those exact slugs (validated against the
+    discovered list) into the heavy/light slots. Also updates the live LLM
+    client so the next scan uses the new pool.
+    """
+    from bugtrace.core.codex_auth import codex_auth_available, fetch_codex_models
+    from bugtrace.core.codex_models import apply_assignments, plan_codex_assignments
+
+    req = req or CodexModelsRequest()
+    if not codex_auth_available():
+        return {"success": False, "configured": False, "message": _codex_assignment_message(), "models": [], "assignments": {}}
+    slugs = await fetch_codex_models()
+    if not slugs:
+        return {"success": False, "configured": True, "message": "Could not reach the ChatGPT model list — no changes applied.", "models": [], "assignments": {}}
+
+    # Explicit picks must be slugs the backend actually serves right now.
+    for pick in (req.main_model, req.light_model):
+        if pick and pick not in slugs:
+            return {"success": False, "configured": True, "message": f"'{pick}' is not in the discovered model list.", "models": slugs, "assignments": {}}
+
+    assignments = plan_codex_assignments(
+        slugs,
+        preferred_heavy=req.main_model or "",
+        preferred_light=req.light_model or "",
+    )
+    if not assignments:
+        return {"success": False, "configured": True, "message": "No usable models returned by the backend.", "models": [], "assignments": {}}
+
+    apply_assignments(assignments, settings)
+    _sync_codex_client_models(assignments)
+    return {
+        "success": True,
+        "configured": True,
+        "models": slugs,
+        "assignments": assignments,
+        "message": "Codex models refreshed and applied to the current session.",
+    }

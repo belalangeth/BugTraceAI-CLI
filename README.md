@@ -454,6 +454,29 @@ SKEPTICAL_MODEL = anthropic/claude-haiku-4.5
 VISION_MODEL = google/gemini-3-flash-preview
 ```
 
+### Codex Provider (ChatGPT login — no API key)
+
+BugTraceAI-CLI can reuse the login from the official **Codex CLI** (`codex auth login`, "Sign in with ChatGPT") instead of an API key. The access token is read from `~/.codex/auth.json` and auto-refreshed via `auth.openai.com`.
+
+```bash
+npm install -g @openai/codex
+codex auth login        # pick: Sign in with ChatGPT
+```
+
+Then in `bugtraceaicli.conf`:
+
+```ini
+[PROVIDER]
+ACTIVE = codex
+
+[CODEX]
+ENABLED = True
+```
+
+No `OPENROUTER_API_KEY` / `OPENAI_API_KEY` is required. Model names are **auto-discovered** from the ChatGPT backend (`chatgpt.com/backend-api/codex/models`) at startup and on provider switch, so the config never points at a renamed/removed model. The static preset in `bugtrace/data/providers/codex.json` is only the offline fallback — disable refresh with `MODEL_AUTODISCOVERY = False` under `[CODEX]`.
+
+> ⚠️ This routes scans through your ChatGPT subscription, which may violate OpenAI's Terms of Service for high-volume programmatic use and can result in account suspension. Use at your own risk.
+
 ### Authenticated Scanning (YAML + TOTP/2FA)
 
 BugTraceAI-CLI supports authenticated scans via a YAML configuration file. This enables scanning login-protected applications with optional TOTP (Time-Based One-Time Password) token generation.

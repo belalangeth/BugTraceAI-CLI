@@ -167,6 +167,17 @@ class Settings(SettingsLoadersMixin, SettingsOpsMixin, BaseSettings):
     ANTHROPIC_OAUTH_ENABLED: bool = False
     ANTHROPIC_TOKEN_FILE: str = "~/.bugtrace/auth.json"
 
+    # --- Codex (ChatGPT login) — reuses tokens from `codex auth login` ---
+    # Reads ~/.codex/auth.json (OAuth access token + auto-refresh via
+    # auth.openai.com). No API key needed. Set [PROVIDER] ACTIVE = codex
+    # AND [CODEX] ENABLED = True.
+    CODEX_AUTH_ENABLED: bool = False
+    CODEX_TOKEN_FILE: str = "~/.codex/auth.json"
+    # Refresh the model slots from chatgpt.com/backend-api/codex/models at
+    # startup / provider switch so the preset never goes stale. The static
+    # preset remains the fallback whenever the backend is unreachable.
+    CODEX_MODEL_AUTODISCOVERY: bool = True
+
     # --- False Positive Filtering (Phase 17: v2.3) ---
     FP_CONFIDENCE_THRESHOLD: float = 0.5  # Minimum fp_confidence to pass filtering (0.0-1.0)
     FP_SKEPTICAL_WEIGHT: float = 0.4  # Weight of skeptical_score in fp_confidence calc

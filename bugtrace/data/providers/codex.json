@@ -1,0 +1,42 @@
+{
+    "id": "codex",
+    "name": "Codex (ChatGPT login)",
+    "api_format": "responses",
+    "base_url": "https://chatgpt.com/backend-api/codex/responses",
+    "api_key_env": "",
+    "api_key_hint": "~/.codex/auth.json — run `codex auth login` (Sign in with ChatGPT). No API key needed.",
+    "failover": [],
+    "features": {
+        "description": "Uses the OAuth tokens stored by the official Codex CLI (`codex auth login`, ChatGPT account) against the ChatGPT backend Responses API. Set [CODEX] ENABLED = True in bugtraceaicli.conf. Model slots are auto-refreshed from the backend /models endpoint at startup (fallback: this file). This reuses your ChatGPT subscription — see OpenAI terms of service.",
+        "online_mode": false,
+        "balance_check": false,
+        "model_discovery": true
+    },
+    "models": {
+        "DEFAULT_MODEL": "gpt-5.4",
+        "CODE_MODEL": "gpt-5.4",
+        "ANALYSIS_MODEL": "gpt-5.4",
+        "ANALYSIS_PENTESTER_MODEL": "gpt-5.4",
+        "ANALYSIS_BUG_BOUNTY_MODEL": "gpt-5.4",
+        "ANALYSIS_AUDITOR_MODEL": "gpt-5.4",
+        "ANALYSIS_RED_TEAM_MODEL": "gpt-5.4",
+        "ANALYSIS_RESEARCHER_MODEL": "gpt-5.4-mini",
+        "PRIMARY_MODELS": "gpt-5.4,gpt-5.4-mini",
+        "VISION_MODEL": "gpt-5.4",
+        "WAF_DETECTION_MODELS": "gpt-5.4-mini",
+        "MUTATION_MODEL": "gpt-5.4-mini",
+        "SKEPTICAL_MODEL": "gpt-5.4-mini",
+        "REPORTING_MODEL": "gpt-5.4-mini",
+        "VALIDATION_VISION_MODEL": "gpt-5.4",
+        "LONEWOLF_MODEL": "gpt-5.4"
+    },
+    "concurrency": {
+        "gpt-5.4": 2,
+        "gpt-5.4-mini": 4,
+        "default": 1
+    },
+    "pricing": {
+        "gpt-5.4": { "input": 0.0, "output": 0.0 },
+        "gpt-5.4-mini": { "input": 0.0, "output": 0.0 }
+    }
+}
