@@ -13,6 +13,7 @@ services:
       - bugtraceai-cli_cli-logs:/app/logs   # persist scanner logs (execution.log / bugtrace.jsonl / errors.log) across rebuilds — enables saturation/timeout forensics
       - /var/run/docker.sock:/var/run/docker.sock
       - ./.env:/app/.env   # bind the host .env so Provider-tab key changes (update_env_var writes /app/.env) persist across restarts
+      - ~/.codex:/root/.codex:ro   # Codex CLI login (codex auth login) for the codex provider
     env_file:
       - .env
     environment:

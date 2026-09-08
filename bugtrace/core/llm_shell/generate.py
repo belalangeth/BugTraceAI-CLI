@@ -581,6 +581,30 @@ class LLMGenerateMixin:
                         timeout=timeout
                     ) as resp:
                         latency_ms = (time.time() - start_time) * 1000
+                        if is_codex:
+                            # ChatGPT backend REQUIRES stream:true, so the body
+                            # arrives as SSE — consume it here instead of the
+                            # non-streaming _handle_api_response path.
+                            if resp.status != 200:
+                                error_body = await resp.text()
+                                self._record_model_call(current_model, success=False, latency_ms=latency_ms)
+                                if resp.status == 429:
+                                    logger.warning(f"Codex rate limited (429): {error_body[:200]}")
+                                    raise LLMRateLimitError(
+                                        f"Rate limited by {current_model}",
+                                        model=current_model,
+                                        retry_after=5.0,
+                                    )
+                                if resp.status >= 500:
+                                    logger.warning(f"Codex server error ({resp.status}): {error_body[:200]}")
+                                else:
+                                    logger.error(f"Codex request failed ({resp.status}): {error_body[:300]}")
+                                return None
+                            text, usage = await self._consume_codex_sse(resp, module_name)
+                            return await self._handle_codex_response_common(
+                                text, usage, current_model, module_name, prompt,
+                                model_override, system_prompt, temperature, max_tokens, latency_ms,
+                            )
                         return await self._handle_api_response(
                             resp, current_model, module_name, prompt,
                             latency_ms, model_override, system_prompt,

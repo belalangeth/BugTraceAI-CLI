@@ -17,8 +17,9 @@ Wire format differs from OpenAI chat/completions:
 
 from __future__ import annotations
 
+import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from bugtrace.utils.logger import get_logger
 
@@ -114,14 +115,18 @@ class LLMCodexMixin:
         max_tokens: int,
         temperature: float = 0.7,
     ) -> Dict[str, Any]:
-        """Build a non-streaming Responses API payload.
+        """Build a Responses API payload for the ChatGPT backend.
 
         Key differences from the OpenAI chat/completions format:
         - system message becomes the top-level `instructions` string
         - remaining messages go into the `input` array
-        - `max_output_tokens` (not `max_tokens`); `temperature` is omitted
-          because the ChatGPT backend applies its own default for reasoning
-          models and rejects explicit temperatures on some of them
+        - `stream` MUST be true: the chatgpt.com/backend-api/codex/responses
+          endpoint rejects non-streaming requests with HTTP 400
+        - no token-cap parameter is accepted at all: the endpoint rejects
+          max_output_tokens / max_tokens / max_completion_tokens with HTTP 400
+          ("Unsupported parameter") — the backend applies its own default
+        - `temperature` is omitted because the backend applies its own default
+          for reasoning models and rejects explicit temperatures on some of them
         """
         instructions = None
         input_messages = []
@@ -138,8 +143,79 @@ class LLMCodexMixin:
             "model": model,
             "input": input_messages,
             "store": False,
-            "max_output_tokens": max_tokens,
+            "stream": True,
         }
         if instructions:
             payload["instructions"] = instructions
         return payload
+
+    async def _consume_codex_sse(self, resp, module_name: str = "") -> Tuple[str, Dict[str, int]]:
+        """Read a Responses-API SSE stream into (text, usage).
+
+        The ChatGPT backend streams `response.output_text.delta` events and
+        finishes with a `response.completed` event carrying the usage.
+        ``resp`` must already have a 200 status.
+        """
+        text_parts: List[str] = []
+        usage: Dict[str, int] = {}
+        try:
+            async for raw in resp.content:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if not data_str or data_str == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                etype = event.get("type")
+                if etype == "response.output_text.delta":
+                    text_parts.append(event.get("delta") or "")
+                elif etype == "response.completed":
+                    response = event.get("response") or {}
+                    u = response.get("usage") or {}
+                    usage["input_tokens"] = int(u.get("input_tokens", 0) or 0)
+                    usage["output_tokens"] = int(u.get("output_tokens", 0) or 0)
+        except Exception as e:
+            logger.warning(f"[Codex] SSE read error for {module_name}: {e}")
+        return "".join(text_parts), usage
+
+    async def _handle_codex_response_common(
+        self,
+        text: str,
+        usage: Dict[str, int],
+        current_model: str,
+        module_name: str,
+        prompt: str,
+        model_override: Optional[str],
+        system_prompt: Optional[str],
+        temperature: float,
+        max_tokens: int,
+        latency_ms: float,
+    ) -> Optional[str]:
+        """Shared post-stream processing for codex completions: refusal check,
+        telemetry and audit, mirroring the non-streaming _handle_api_response.
+        """
+        if not text:
+            self._record_model_call(current_model, success=False, latency_ms=latency_ms)
+            logger.warning(f"Codex API: {current_model} returned no text content.")
+            return None
+        data = {
+            "usage": {
+                "prompt_tokens": usage.get("input_tokens", 0),
+                "completion_tokens": usage.get("output_tokens", 0),
+                "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+            }
+        }
+        result = await self._handle_refusal(
+            text, current_model, model_override, prompt, module_name, system_prompt, temperature, max_tokens
+        )
+        if result != text:
+            return result
+        self._record_model_call(current_model, success=True, latency_ms=latency_ms)
+        await self._update_telemetry(data, current_model, module_name)
+        await self._audit_log(module_name, current_model, prompt, text)
+        logger.info(f"Codex API: Using {current_model} for {module_name}")
+        return text

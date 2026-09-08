@@ -131,17 +131,11 @@ class LLMVisionMixin:
         if resp.status != 200:
             return None
 
-        data = await resp.json()
         if is_responses:
-            text_parts = []
-            for item in data.get("output", []) or []:
-                if not isinstance(item, dict) or item.get("type") != "message":
-                    continue
-                for block in item.get("content", []) or []:
-                    if isinstance(block, dict) and block.get("type") == "output_text":
-                        text_parts.append(block.get("text", ""))
-            text = "\n".join(p for p in text_parts if p)
+            # ChatGPT backend streams — the vision response is SSE.
+            text, _usage = await self._consume_codex_sse(resp, module_name)
         else:
+            data = await resp.json()
             text = data['choices'][0]['message']['content']
         await self._audit_log(f"Vision-{module_name}", settings.VISION_MODEL, prompt, text)
         return text
@@ -251,21 +245,16 @@ class LLMVisionMixin:
             logger.error(f"[{module_name}] Vision API error ({resp.status}): {error_text}")
             return ""
 
-        data = await resp.json()
         if is_responses:
-            text_parts = []
-            for item in data.get("output", []) or []:
-                if not isinstance(item, dict) or item.get("type") != "message":
-                    continue
-                for block in item.get("content", []) or []:
-                    if isinstance(block, dict) and block.get("type") == "output_text":
-                        text_parts.append(block.get("text", ""))
-            result = "\n".join(p for p in text_parts if p)
-        elif is_anthropic:
-            content = data.get("content", [])
-            text_parts = [b["text"] for b in content if b.get("type") == "text"]
-            result = "\n".join(text_parts) if text_parts else ""
+            # ChatGPT backend streams — the vision response is SSE.
+            result, _usage = await self._consume_codex_sse(resp, module_name)
         else:
-            result = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            data = await resp.json()
+            if is_anthropic:
+                content = data.get("content", [])
+                text_parts = [b["text"] for b in content if b.get("type") == "text"]
+                result = "\n".join(text_parts) if text_parts else ""
+            else:
+                result = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         logger.info(f"[{module_name}] Vision response: {result[:100]}")
         return result

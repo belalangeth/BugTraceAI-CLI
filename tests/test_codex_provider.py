@@ -37,16 +37,48 @@ def make_jwt(exp: int) -> str:
     return f"{header}.{payload}.sig"
 
 
+class _FakeContent:
+    """Async line iterator stand-in for aiohttp's resp.content."""
+
+    def __init__(self, lines):
+        self._lines = [l if isinstance(l, bytes) else l.encode() for l in (lines or [])]
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._lines:
+            raise StopAsyncIteration
+        return self._lines.pop(0)
+
+
 class _FakeResp:
-    def __init__(self, status=200, data=None):
+    def __init__(self, status=200, data=None, sse=None):
         self.status = status
         self._data = data or {}
+        # When sse lines are given, resp behaves like a streaming body; the
+        # codex path reads resp.content and never calls resp.json().
+        self.content = _FakeContent(sse or []) if sse else None
 
     async def json(self):
         return self._data
 
     async def text(self):
         return json.dumps(self._data)
+
+
+def _sse_lines(text: str, input_tokens: int = 11, output_tokens: int = 22):
+    """Build Responses-API SSE data lines for a completion of ``text``."""
+    import json as _json
+    lines = ['data: ' + _json.dumps({"type": "response.created"})]
+    for chunk in [text[i:i + 3] for i in range(0, len(text), 3)]:
+        lines.append('data: ' + _json.dumps({"type": "response.output_text.delta", "delta": chunk}))
+    lines.append('data: ' + _json.dumps({
+        "type": "response.completed",
+        "response": {"usage": {"input_tokens": input_tokens, "output_tokens": output_tokens}},
+    }))
+    lines.append('data: [DONE]')
+    return lines
 
 
 class _FakeTracker:
@@ -256,7 +288,10 @@ def test_build_codex_payload_converts_messages():
     assert payload["instructions"] == "You are a pentester."
     assert payload["input"] == [{"role": "user", "content": "Analyze this."}]
     assert payload["store"] is False
-    assert payload["max_output_tokens"] == 1500
+    assert payload["stream"] is True  # the ChatGPT backend rejects non-streaming
+    # No token-cap parameter: the backend rejects all of them with HTTP 400.
+    assert "max_output_tokens" not in payload
+    assert "max_tokens" not in payload
     # ChatGPT backend applies its own default — no explicit temperature.
     assert "temperature" not in payload
     assert "messages" not in payload
@@ -377,8 +412,8 @@ def test_handle_api_response_defaults_to_chat_format():
 
 
 def test_attempt_model_generation_routes_codex_request(monkeypatch):
-    """The codex provider sends a Responses API payload to the ChatGPT backend
-    with the borrowed Codex CLI token, and parses the output back out."""
+    """The codex provider streams a Responses API request to the ChatGPT
+    backend with the borrowed Codex CLI token, and reassembles the SSE output."""
     import bugtrace.core.llm_shell.generate as generate_module
 
     async def fake_token():
@@ -391,7 +426,7 @@ def test_attempt_model_generation_routes_codex_request(monkeypatch):
     client.provider_id = "codex"
     client.base_url = "https://chatgpt.com/backend-api/codex/responses"
 
-    resp = _FakeResp(200, _responses_payload("routed!"))
+    resp = _FakeResp(200, sse=_sse_lines("routed!"))
     fake_orch = _FakeOrchestrator(resp)
     monkeypatch.setattr(generate_module, "orchestrator", fake_orch)
 
@@ -411,7 +446,32 @@ def test_attempt_model_generation_routes_codex_request(monkeypatch):
     assert payload["model"] == "gpt-5.4"
     assert payload["instructions"] == "sys"
     assert payload["input"] == [{"role": "user", "content": "hi"}]
-    assert payload["max_output_tokens"] == 100
+    assert "max_output_tokens" not in payload
+    assert payload["stream"] is True
+
+
+def test_consume_codex_sse_joins_deltas():
+    client = _Client()
+    resp = _FakeResp(200, sse=_sse_lines("streamed hello"))
+    text, usage = asyncio_run(client._consume_codex_sse(resp, "test"))
+    assert text == "streamed hello"
+    assert usage == {"input_tokens": 11, "output_tokens": 22}
+
+
+def test_consume_codex_sse_empty():
+    client = _Client()
+    resp = _FakeResp(200, sse=[])
+    text, usage = asyncio_run(client._consume_codex_sse(resp, "test"))
+    assert text == ""
+    assert usage == {}
+
+
+def test_handle_codex_response_common_no_text_returns_none():
+    client = _Client()
+    result = asyncio_run(client._handle_codex_response_common(
+        "", {}, "gpt-5.4", "test", "prompt", None, None, 0.7, 100, 5.0,
+    ))
+    assert result is None
 
 
 # ───────────────────────────── config + preset ─────────────────────────────

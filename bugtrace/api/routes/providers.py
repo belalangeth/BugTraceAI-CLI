@@ -267,9 +267,16 @@ async def test_provider_key(req: TestProviderRequest):
     if not api_key and not is_codex:
         return {"success": False, "message": "No API key provided and none configured."}
 
-    # Pick the fastest/cheapest model from preset for testing
+    # Pick the fastest/cheapest model from preset for testing. The codex
+    # provider's model slots are auto-discovered from the ChatGPT backend at
+    # runtime, so prefer the live settings value over the static preset file
+    # (which may name a model the backend no longer serves).
     models = preset.get("models", {})
     test_model = models.get("ANALYSIS_MODEL") or models.get("DEFAULT_MODEL") or ""
+    if is_codex:
+        live_model = getattr(settings, "ANALYSIS_MODEL", "") or getattr(settings, "DEFAULT_MODEL", "")
+        if live_model:
+            test_model = live_model
     if not test_model:
         return {"success": False, "message": "No model configured for this provider."}
 
@@ -293,7 +300,7 @@ async def test_provider_key(req: TestProviderRequest):
             "model": test_model,
             "input": [{"role": "user", "content": "Are you alive? Answer only yes."}],
             "store": False,
-            "max_output_tokens": 5,
+            "stream": True,  # backend rejects non-streaming AND token-cap params
         }
     elif api_format == "anthropic":
         headers: Dict[str, str] = {

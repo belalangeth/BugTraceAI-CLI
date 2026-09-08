@@ -179,6 +179,22 @@ class LLMThreadMixin:
         try:
             async with orchestrator.session(DestinationType.LLM) as session:
                 async with session.post(self.base_url, headers=api_headers, json=payload) as resp:
+                    if is_responses:
+                        # ChatGPT backend REQUIRES stream:true → SSE body.
+                        if resp.status != 200:
+                            error_text = await resp.text()
+                            logger.error(f"LLM Thread: {current_model} failed ({resp.status}). {error_text[:200]}")
+                            return None
+                        response_text, _usage = await self._consume_codex_sse(resp, module_name)
+                        if not response_text:
+                            logger.warning(f"LLM Thread: Model {current_model} returned empty response.")
+                            return None
+                        thread.add_message("assistant", response_text)
+                        self.req_count += 1
+                        dashboard.total_requests += 1
+                        await self._audit_log(module_name, current_model, f"[Thread: {thread.thread_id}] {prompt}", response_text)
+                        logger.info(f"LLM Thread Success: {current_model} for {module_name} (thread: {thread.thread_id})")
+                        return response_text
                     return await self._handle_thread_response(
                         resp, current_model, module_name, thread, prompt,
                         is_anthropic=is_anthropic,
