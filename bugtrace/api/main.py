@@ -253,12 +253,22 @@ async def health_check(
             provider_ready = True
             import json as _json
             preset_data = _json.loads(preset_path.read_text())
-            key_env = preset_data.get("api_key_env", "")
-            key_value = os.environ.get(key_env) or getattr(settings, key_env, None)
-            api_key_configured = bool(key_value)
             provider_name = preset_data.get("name", settings.PROVIDER)
-            if not api_key_configured:
-                warnings.append(f"API key not configured for provider '{provider_name}'. Set {key_env} in your .env file.")
+            key_env = preset_data.get("api_key_env", "")
+            # The codex (ChatGPT login) provider has no api_key_env — it is
+            # "configured" when a Codex CLI login (~/.codex/auth.json) exists.
+            if preset_data.get("api_format") == "responses" or preset_data.get("id") == "codex":
+                from bugtrace.core.codex_auth import codex_auth_available
+                api_key_configured = codex_auth_available()
+                if not api_key_configured:
+                    warnings.append(
+                        "No Codex login found. Run `codex auth login` (Sign in with ChatGPT) on the CLI host."
+                    )
+            else:
+                key_value = os.environ.get(key_env) or getattr(settings, key_env, None)
+                api_key_configured = bool(key_value)
+                if not api_key_configured:
+                    warnings.append(f"API key not configured for provider '{provider_name}'. Set {key_env} in your .env file.")
         else:
             warnings.append(f"Provider preset '{settings.PROVIDER}' not found. Check bugtrace/data/providers/ directory.")
     except Exception as e:
