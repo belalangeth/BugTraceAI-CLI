@@ -107,9 +107,26 @@ class DiagnosticSystem:
         The preset's api_key_env is the same source llm_client resolves from.
         """
         preset = _active_preset()
-        key_env, api_key = _resolve_api_key(preset)
         label = _provider_label(preset)
 
+        # The codex (ChatGPT login) provider has no api_key_env — it is
+        # "configured" when a Codex CLI login (~/.codex/auth.json) exists.
+        # Same branch /health uses, so this gate can never reject a provider
+        # the API reports as healthy.
+        if preset.get("api_format") == "responses" or preset.get("id") == "codex":
+            from bugtrace.core.codex_auth import codex_auth_available
+            success = codex_auth_available()
+            self.results["api_key"] = (
+                success,
+                "" if success else "No Codex login found. Run `codex auth login` (Sign in with ChatGPT) on the CLI host.",
+            )
+            if success:
+                dashboard.log(f"{label} login detected (Brain Online)", "SUCCESS")
+            else:
+                dashboard.log(f"No {label} login: run `codex auth login`", "ERROR")
+            return
+
+        key_env, api_key = _resolve_api_key(preset)
         success = bool(api_key) and len(api_key) > 10
         self.results["api_key"] = (
             success,
